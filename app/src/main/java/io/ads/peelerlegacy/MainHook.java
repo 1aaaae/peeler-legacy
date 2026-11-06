@@ -165,7 +165,78 @@ public class MainHook implements IXposedHookLoadPackage {
         n += setFalse(model, "shortVideoAdEnable");
         n += setFalse(model, "landscapeInsertAdEnable");
         n += setFalse(model, "enableMultiSeriesFlowAd");
+
+        // 全量拦截：递归遍历对象树，把所有广告开关型 boolean 字段置 false
+        n += disableAllAdSwitches(model, 0);
         return n;
+    }
+
+    /**
+     * 递归遍历广告配置对象，把所有「广告开关型」boolean 字段置 false。
+     * 判断规则：字段名包含 ad/Ad/enable/Enable/switch/Switch/open/Open/show/Show，
+     * 且类型为 boolean。覆盖中插、横屏、暂停、推荐流、Banner、评论区、开屏等所有广告。
+     */
+    private static int disableAllAdSwitches(Object obj, int depth) {
+        if (obj == null || depth > 5) return 0;
+        int n = 0;
+        Class<?> c = obj.getClass();
+        // 只处理红果/穿山甲配置类，避免递归进系统类
+        if (c.getName().startsWith("java.") || c.getName().startsWith("javax.")
+                || c.getName().startsWith("android.") || c.getName().startsWith("kotlin.")) {
+            return 0;
+        }
+        for (Field f : c.getFields()) {
+            try {
+                if (!java.lang.reflect.Modifier.isStatic(f.getModifiers())
+                        && !java.lang.reflect.Modifier.isFinal(f.getModifiers())) {
+                    f.setAccessible(true);
+                    if (f.getType() == boolean.class) {
+                        String name = f.getName();
+                        if (isAdSwitch(name) && f.getBoolean(obj)) {
+                            f.setBoolean(obj, false);
+                            if (REPORTED.add(name)) {
+                                Log.i(TAG, "ad-switch " + name + " -> false");
+                            }
+                            n++;
+                        }
+                    } else if (f.getType() == java.util.List.class
+                            || f.getType().isArray()) {
+                        // 列表/数组里的广告配置也递归处理
+                        Object v = f.get(obj);
+                        if (v instanceof java.util.List) {
+                            for (Object item : (java.util.List<?>) v) {
+                                n += disableAllAdSwitches(item, depth + 1);
+                            }
+                        }
+                    } else if (!f.getType().isPrimitive()
+                            && f.getType() != String.class
+                            && f.getType() != Integer.class
+                            && f.getType() != Long.class
+                            && f.getType() != Boolean.class
+                            && f.getType() != Double.class
+                            && f.getType() != Float.class) {
+                        // 嵌套配置对象递归
+                        Object v = f.get(obj);
+                        if (v != null && !(v instanceof java.lang.Enum)) {
+                            n += disableAllAdSwitches(v, depth + 1);
+                        }
+                    }
+                }
+            } catch (Throwable ignore) {
+            }
+        }
+        return n;
+    }
+
+    private static boolean isAdSwitch(String name) {
+        String lower = name.toLowerCase();
+        // 广告配置类里的 boolean 字段，只要名字含 ad 就当成广告开关
+        // （含 enable/switch/open/show 的也一并关，覆盖推荐流/暂停/Banner/开屏等）
+        return lower.contains("ad")
+                || lower.contains("enable")
+                || lower.contains("switch")
+                || lower.contains("open")
+                || lower.contains("show");
     }
 
     private static Object getOrCreate(Object parent, String name) {
